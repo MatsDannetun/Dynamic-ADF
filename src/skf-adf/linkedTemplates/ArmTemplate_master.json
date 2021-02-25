@@ -1,0 +1,84 @@
+{
+	"$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"factoryName": {
+			"type": "string",
+			"metadata": "Data Factory name",
+			"defaultValue": "xz-98a-dev-01-adf"
+		},
+		"LinkWCMAppDestination_connectionString": {
+			"type": "secureString",
+			"metadata": "Secure string for 'connectionString' of 'LinkWCMAppDestination'"
+		},
+		"LinkWCMAppDestinationInit_connectionString": {
+			"type": "secureString",
+			"metadata": "Secure string for 'connectionString' of 'LinkWCMAppDestinationInit'"
+		},
+		"LinkWCMAppSource_connectionString": {
+			"type": "secureString",
+			"metadata": "Secure string for 'connectionString' of 'LinkWCMAppSource'"
+		},
+		"LinkWCMConfigDestination_connectionString": {
+			"type": "secureString",
+			"metadata": "Secure string for 'connectionString' of 'LinkWCMConfigDestination'"
+		},
+		"LinkWCMConfigDestinationInit_connectionString": {
+			"type": "secureString",
+			"metadata": "Secure string for 'connectionString' of 'LinkWCMConfigDestinationInit'"
+		},
+		"LinkWCMConfigSource_connectionString": {
+			"type": "secureString",
+			"metadata": "Secure string for 'connectionString' of 'LinkWCMConfigSource'"
+		},
+		"containerUri": {
+			"type": "string",
+			"metadata": "URI to storage account containing linked ARM templates"
+		},
+		"containerSasToken": {
+			"type": "string",
+			"metadata": "Sas token to storage account containing linked ARM templates"
+		}
+	},
+	"variables": {
+		"factoryId": "[concat('Microsoft.DataFactory/factories/', parameters('factoryName'))]"
+	},
+	"resources": [
+		{
+			"name": "xz-98a-dev-01-adf_ArmTemplate_0",
+			"type": "Microsoft.Resources/deployments",
+			"apiVersion": "2018-02-01",
+			"properties": {
+				"mode": "incremental",
+				"templateLink": {
+					"uri": "[concat(parameters('containerUri'), '/ArmTemplate_0.json', parameters('containerSasToken'))]",
+					"contentVersion": "1.0.0.0"
+				},
+				"parameters": {
+					"factoryName": {
+						"value": "[parameters('factoryName')]"
+					},
+					"LinkWCMAppDestination_connectionString": {
+						"value": "[parameters('LinkWCMAppDestination_connectionString')]"
+					},
+					"LinkWCMAppDestinationInit_connectionString": {
+						"value": "[parameters('LinkWCMAppDestinationInit_connectionString')]"
+					},
+					"LinkWCMAppSource_connectionString": {
+						"value": "[parameters('LinkWCMAppSource_connectionString')]"
+					},
+					"LinkWCMConfigDestination_connectionString": {
+						"value": "[parameters('LinkWCMConfigDestination_connectionString')]"
+					},
+					"LinkWCMConfigDestinationInit_connectionString": {
+						"value": "[parameters('LinkWCMConfigDestinationInit_connectionString')]"
+					},
+					"LinkWCMConfigSource_connectionString": {
+						"value": "[parameters('LinkWCMConfigSource_connectionString')]"
+					}
+				}
+			},
+			"dependsOn": []
+		}
+	]
+}

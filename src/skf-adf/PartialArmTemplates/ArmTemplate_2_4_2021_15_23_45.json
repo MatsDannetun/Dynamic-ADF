@@ -1,0 +1,482 @@
+{
+	"$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"factoryName": {
+			"type": "string",
+			"metadata": "Data Factory name",
+			"defaultValue": "datareplication-adf"
+		}
+	},
+	"variables": {
+		"factoryId": "[concat('Microsoft.DataFactory/factories/', parameters('factoryName'))]"
+	},
+	"resources": [
+		{
+			"name": "[concat(parameters('factoryName'), '/pipelineWCMAppDataCopy')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"activities": [
+					{
+						"name": "ForEachTable",
+						"type": "ForEach",
+						"dependsOn": [
+							{
+								"activity": "Lookup Source WCMApp",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"userProperties": [],
+						"typeProperties": {
+							"items": {
+								"value": "@activity('Lookup Source WCMApp').output.value",
+								"type": "Expression"
+							},
+							"activities": [
+								{
+									"name": "If Condition first version",
+									"type": "IfCondition",
+									"dependsOn": [],
+									"userProperties": [],
+									"typeProperties": {
+										"expression": {
+											"value": "@greater(int(item().SYS_CHANGE_VERSION),0)",
+											"type": "Expression"
+										},
+										"ifFalseActivities": [
+											{
+												"name": "Copy data inital load",
+												"type": "Copy",
+												"dependsOn": [],
+												"policy": {
+													"timeout": "7.00:00:00",
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"source": {
+														"type": "SqlServerSource",
+														"sqlReaderQuery": {
+															"value": "SELECT * FROM @{item().schema_name}.@{item().table_name}",
+															"type": "Expression"
+														},
+														"queryTimeout": "02:00:00",
+														"partitionOption": "None"
+													},
+													"sink": {
+														"type": "AzureSqlSink",
+														"preCopyScript": {
+															"value": "IF EXISTS (SELECT 1\n  FROM INFORMATION_SCHEMA.TABLES\n  WHERE TABLE_SCHEMA ='@{item().schema_name}'\n  AND TABLE_NAME = '@{item().table_name}') \n     Begin\n\t\tDROP TABLE @{item().schema_name}.@{item().table_name}\n     End",
+															"type": "Expression"
+														},
+														"tableOption": "autoCreate",
+														"disableMetricsCollection": false
+													},
+													"enableStaging": false,
+													"translator": {
+														"type": "TabularTranslator",
+														"typeConversion": true,
+														"typeConversionSettings": {
+															"allowDataTruncation": true,
+															"treatBooleanAsNumber": false
+														}
+													}
+												},
+												"inputs": [
+													{
+														"referenceName": "DSWCMAppSourceGeneric",
+														"type": "DatasetReference",
+														"parameters": {
+															"schema_name": "@item().schema_name",
+															"table_name": "@item().table_name"
+														}
+													}
+												],
+												"outputs": [
+													{
+														"referenceName": "DSWCMAppDestinationGeneric",
+														"type": "DatasetReference",
+														"parameters": {
+															"schema_name": "@item().schema_name",
+															"table_name": "@item().table_name"
+														}
+													}
+												]
+											},
+											{
+												"name": "SPROC update_copy_init",
+												"type": "SqlServerStoredProcedure",
+												"dependsOn": [
+													{
+														"activity": "SPROC alter table",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"timeout": "7.00:00:00",
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"storedProcedureName": {
+														"value": "[[ct].[UpdateChangeTrackingVersion]",
+														"type": "Expression"
+													},
+													"storedProcedureParameters": {
+														"CurrentTrackingVersion": {
+															"value": {
+																"value": "@{item().CurrentChangeTrackingVersion}",
+																"type": "Expression"
+															},
+															"type": "Int64"
+														},
+														"schema_name": {
+															"value": {
+																"value": "@item().schema_name",
+																"type": "Expression"
+															},
+															"type": "String"
+														},
+														"table_name": {
+															"value": {
+																"value": "@item().table_name",
+																"type": "Expression"
+															},
+															"type": "String"
+														}
+													}
+												},
+												"linkedServiceName": {
+													"referenceName": "LinkWCMAppSource",
+													"type": "LinkedServiceReference"
+												}
+											},
+											{
+												"name": "SPROC alter table",
+												"type": "SqlServerStoredProcedure",
+												"dependsOn": [
+													{
+														"activity": "Copy data inital load",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"timeout": "7.00:00:00",
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"storedProcedureName": "[[stage].[createclusterindex]",
+													"storedProcedureParameters": {
+														"schema_name": {
+															"value": {
+																"value": "@item().schema_name",
+																"type": "Expression"
+															},
+															"type": "String"
+														},
+														"table_name": {
+															"value": {
+																"value": "@item().table_name",
+																"type": "Expression"
+															},
+															"type": "String"
+														}
+													}
+												},
+												"linkedServiceName": {
+													"referenceName": "LinkWCMAppDestination",
+													"type": "LinkedServiceReference"
+												}
+											}
+										],
+										"ifTrueActivities": [
+											{
+												"name": "SPROC update",
+												"type": "SqlServerStoredProcedure",
+												"dependsOn": [
+													{
+														"activity": "SPROC update dest table",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"timeout": "7.00:00:00",
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"storedProcedureName": "[[ct].[UpdateChangeTrackingVersion]",
+													"storedProcedureParameters": {
+														"CurrentTrackingVersion": {
+															"value": {
+																"value": "@{activity('LookupCurrentCTActivity').output.firstRow.CurrentChangeTrackingVersion}",
+																"type": "Expression"
+															},
+															"type": "Int64"
+														},
+														"schema_name": {
+															"value": {
+																"value": "@item().schema_name",
+																"type": "Expression"
+															},
+															"type": "String"
+														},
+														"table_name": {
+															"value": {
+																"value": "@item().table_name",
+																"type": "Expression"
+															},
+															"type": "String"
+														}
+													}
+												},
+												"linkedServiceName": {
+													"referenceName": "LinkWCMAppSource",
+													"type": "LinkedServiceReference"
+												}
+											},
+											{
+												"name": "LookupCurrentCTActivity",
+												"type": "Lookup",
+												"dependsOn": [],
+												"policy": {
+													"timeout": "7.00:00:00",
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"source": {
+														"type": "SqlServerSource",
+														"sqlReaderQuery": {
+															"value": "SELECT CHANGE_TRACKING_CURRENT_VERSION() as CurrentChangeTrackingVersion",
+															"type": "Expression"
+														},
+														"queryTimeout": "02:00:00",
+														"partitionOption": "None"
+													},
+													"dataset": {
+														"referenceName": "DSWCMAppSourceLookup",
+														"type": "DatasetReference"
+													}
+												}
+											},
+											{
+												"name": "SPROC update dest table",
+												"type": "SqlServerStoredProcedure",
+												"dependsOn": [
+													{
+														"activity": "Copy all data incremental",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"timeout": "7.00:00:00",
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"storedProcedureName": "[[stage].[sp_updatetablesfromstage]",
+													"storedProcedureParameters": {
+														"schema_name": {
+															"value": {
+																"value": "@item().schema_name",
+																"type": "Expression"
+															}
+														},
+														"table_name": {
+															"value": {
+																"value": "@item().table_name",
+																"type": "Expression"
+															}
+														}
+													}
+												},
+												"linkedServiceName": {
+													"referenceName": "LinkWCMAppDestination",
+													"type": "LinkedServiceReference"
+												}
+											},
+											{
+												"name": "Copy all data incremental",
+												"type": "Copy",
+												"dependsOn": [
+													{
+														"activity": "LookupCurrentCTActivity",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"timeout": "7.00:00:00",
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"source": {
+														"type": "SqlServerSource",
+														"sqlReaderStoredProcedureName": "[[ct].[getincrementaldata]",
+														"storedProcedureParameters": {
+															"schema_name": {
+																"type": "String",
+																"value": {
+																	"value": "@item().schema_name",
+																	"type": "Expression"
+																}
+															},
+															"SYS_CHANGE_VERSION": {
+																"type": "Int64",
+																"value": {
+																	"value": "@item().SYS_CHANGE_VERSION",
+																	"type": "Expression"
+																}
+															},
+															"table_name": {
+																"type": "String",
+																"value": {
+																	"value": "@item().table_name",
+																	"type": "Expression"
+																}
+															}
+														},
+														"queryTimeout": "02:00:00",
+														"partitionOption": "None"
+													},
+													"sink": {
+														"type": "AzureSqlSink",
+														"preCopyScript": {
+															"value": "IF EXISTS (SELECT *\n  FROM INFORMATION_SCHEMA.TABLES\n  WHERE TABLE_SCHEMA = 'stage'\n  AND TABLE_NAME = '@{item().table_name}') \n     Begin\n\t\tdrop table [stage].@{item().table_name}\n     End\nDECLARE @schema_name varchar(128),@table_name varchar(128)\nDECLARE @ID Int, @SYS_CHANGE_VERSION Bigint, @SYS_CHANGE_OPERATION varchar(1)\nSET @schema_name = '@{item().schema_name}'\nSET @table_name = '@{item().table_name}'\nSELECT TOP 0 * ,@SYS_CHANGE_VERSION AS SYS_CHANGE_VERSION, @SYS_CHANGE_OPERATION as SYS_CHANGE_OPERATION\nINTO [stage].@{item().table_name} FROM @{item().schema_name}.@{item().table_name}",
+															"type": "Expression"
+														},
+														"disableMetricsCollection": false
+													},
+													"enableStaging": false,
+													"translator": {
+														"type": "TabularTranslator",
+														"typeConversion": true,
+														"typeConversionSettings": {
+															"allowDataTruncation": true,
+															"treatBooleanAsNumber": false
+														}
+													}
+												},
+												"inputs": [
+													{
+														"referenceName": "DSWCMAppSourceLookup",
+														"type": "DatasetReference"
+													}
+												],
+												"outputs": [
+													{
+														"referenceName": "DSWCMAppDestinationGeneric",
+														"type": "DatasetReference",
+														"parameters": {
+															"schema_name": "stage",
+															"table_name": "@item().table_name"
+														}
+													}
+												]
+											}
+										]
+									}
+								}
+							]
+						}
+					},
+					{
+						"name": "Lookup Source WCMApp",
+						"type": "Lookup",
+						"dependsOn": [
+							{
+								"activity": "SPROC check for new tables",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "SqlServerSource",
+								"sqlReaderQuery": {
+									"value": "SELECT schema_name, table_name,SYS_CHANGE_VERSION,CHANGE_TRACKING_CURRENT_VERSION() as  CurrentChangeTrackingVersion FROM CT.ChangeTrackingVersion WHERE ActiveFlag=1 and Pipegroup='WCMAPP' and SYS_CHANGE_VERSION < CASE WHEN CHANGE_TRACKING_CURRENT_VERSION()=0 THEN 1 ELSE CHANGE_TRACKING_CURRENT_VERSION() END ",
+									"type": "Expression"
+								},
+								"queryTimeout": "02:00:00",
+								"partitionOption": "None"
+							},
+							"dataset": {
+								"referenceName": "DSWCMAppSourceLookup",
+								"type": "DatasetReference"
+							},
+							"firstRowOnly": false
+						}
+					},
+					{
+						"name": "SPROC check for new tables",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": "[[ct].[InsertNewChangeTrackingtable]"
+						},
+						"linkedServiceName": {
+							"referenceName": "LinkWCMAppSource",
+							"type": "LinkedServiceReference"
+						}
+					}
+				],
+				"annotations": [],
+				"lastPublishTime": "2021-01-29T13:51:39Z"
+			},
+			"dependsOn": []
+		}
+	]
+}

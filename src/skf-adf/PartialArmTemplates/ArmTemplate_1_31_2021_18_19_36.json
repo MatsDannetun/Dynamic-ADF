@@ -1,0 +1,173 @@
+{
+	"$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"factoryName": {
+			"type": "string",
+			"metadata": "Data Factory name",
+			"defaultValue": "datareplication-adf"
+		}
+	},
+	"variables": {
+		"factoryId": "[concat('Microsoft.DataFactory/factories/', parameters('factoryName'))]"
+	},
+	"resources": [
+		{
+			"name": "[concat(parameters('factoryName'), '/pipelineInitalSetupWCM')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"activities": [
+					{
+						"name": "SPROC SOURCE if exist and CT enabled",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "Lookup Server name",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": {
+								"value": "sp_executesql",
+								"type": "Expression"
+							},
+							"storedProcedureParameters": {
+								"statement": {
+									"value": {
+										"value": "IF NOT EXISTS (SELECT 1 FROM sys.change_tracking_databases t\nINNER JOIN sys.databases d ON d.database_id = t.database_id WHERE d.name='app-db') \n     Begin\n\t\tIF EXISTS(SELECT 1 FROM sys.databases WHERE name='app-db')\n\t\tBEGIN\n\t\t\tALTER DATABASE [app-db]  \n\t\t\tSET CHANGE_TRACKING = ON  \n\t\t\t(CHANGE_RETENTION = 2 DAYS, AUTO_CLEANUP = ON)\n\t\tEND\n\tEND",
+										"type": "Expression"
+									},
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "LinkWCMAppSource",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "SPROC SOURCE deploy db objects",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "SPROC SOURCE if exist and CT enabled",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": {
+								"value": "sp_executesql",
+								"type": "Expression"
+							},
+							"storedProcedureParameters": {
+								"statement": {
+									"value": {
+										"value": "IF NOT EXISTS (SELECT 1 FROM sys.change_tracking_databases t\nINNER JOIN sys.databases d ON d.database_id = t.database_id WHERE d.name='app-db') \n     Begin\n\t\tIF EXISTS(SELECT 1 FROM sys.databases WHERE name='app-db')\n\t\tBEGIN\n\t\t\tALTER DATABASE [app-db]  \n\t\t\tSET CHANGE_TRACKING = ON  \n\t\t\t(CHANGE_RETENTION = 2 DAYS, AUTO_CLEANUP = ON)\n\t\tEND\n\tEND;\n\nIF NOT EXISTS(SELECT 1 FROM [app-db].sys.schemas WHERE name='ct')\n\tBegin\n\t\tEXEC('CREATE SCHEMA [ct]'); \n\tEnd;\nGO\n\nIF NOT EXISTS(SELECT 1 FROM [app-db].sys.tables WHERE name='ChangeTrackingVersion')\n\tBegin\n\t\tcreate table [ct].ChangeTrackingVersion\n\t\t(\n\t\t\tid int identity(1,1),\n\t\t\t[object_id] int,\n\t\t\t[schema_name] varchar(255),\n\t\t\t[table_name] varchar(255),\n\t\t\t[pipegroup] varchar(50),\n\t\t\tSYS_CHANGE_VERSION BIGINT,\n\t\t\tActiveflag bit default(1)\n\t\t\tPRIMARY KEY (id)\n\t\t)\n\t--\n\t\tINSERT INTO ChangeTrackingVersion(object_id,schema_name,table_name,SYS_CHANGE_VERSION)\n\t\tSELECT t.object_id,s.name as Schema_name, t.name AS Table_name,pipegroup='WCMAPP', 0 as SYS_CHANGE_VERSION\n\t\tFROM sys.change_tracking_tables tr\n\t\tINNER JOIN sys.tables t on t.object_id = tr.object_id\n\t\tINNER JOIN sys.schemas s on s.schema_id = t.schema_id WHERE t.object_id not in ('SELECT object_id FROM [ct].[ChangeTrackingVersion]')\n\n\t\tUPDATE ChangeTrackingVersion SET pipegroup='WCMOEE' WHERE NAME IN('[dbo].[MachineKpis]','[dbo].[MachineGroupKpis]','[dbo].[JobHistories]')\n\tEND;\nGO\n\nIF NOT EXISTS(SELECT 1 FROM [app-db].sys.procedures WHERE name='UpdateChangeTrackingVersion')\n\tBegin\n\t\tCREATE PROCEDURE [ct].[UpdateChangeTrackingVersion] @CurrentTrackingVersion BIGINT, @schema_name varchar(255), @table_name varchar(255)\n\t\tAS\n\t\tUPDATE ct.ChangeTrackingVersion\n\t\tSET [SYS_CHANGE_VERSION] = @CurrentTrackingVersion\n\t\tWHERE [schema_name]=@schema_name and [table_Name] = @table_name\n\tEND;\nGO\nIF NOT EXISTS(SELECT 1 FROM [app-db].sys.procedures WHERE name='InsertNewChangeTrackingtable')\n\tBegin\n\t\tEXEC ('CREATE PROCEDURE [ct].[InsertNewChangeTrackingtable] \n\t\tAS\n\t\t\tINSERT INTO ChangeTrackingVersion(object_id,schema_name,table_name,SYS_CHANGE_VERSION)\nSELECT t.object_id,s.name as Schema_name, t.name AS Table_name,pipegroup='WCMAPP', 0 as SYS_CHANGE_VERSION\nFROM sys.change_tracking_tables tr\nINNER JOIN sys.tables t on t.object_id = tr.object_id\nINNER JOIN sys.schemas s on s.schema_id = t.schema_id WHERE t.object_id not in ('SELECT object_id FROM [ct].[ChangeTrackingVersion]')')\n\tEnd;\nGO",
+										"type": "Expression"
+									},
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "LinkWCMAppSource",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "SPROC DESTINATION Deploy sproc",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "SPROC SOURCE deploy db objects",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": {
+								"value": "sp_executesql",
+								"type": "Expression"
+							},
+							"storedProcedureParameters": {
+								"statement": {
+									"value": {
+										"value": "IF NOT EXISTS(SELECT 1 FROM ['@{activity('Lookup server name').output.value}'-app-db].sys.schemas WHERE name='stage')\n\tBegin\n\t\tEXEC('CREATE SCHEMA [stage]'); \n\tEnd;\nGO\nCREATE PROCEDURE [stage].[sp_updatetablesfromstage] @schema_name varchar(30), @table_name varchar(30)\n\t\t\tAS\n\t\t\tDECLARE @statement nvarchar(3000)\n\t\t\t--\n\t\t\tSELECT @statement = '\n\t\t\tDECLARE @Column varchar(30)\n\t\t\tDECLARE @columnlist varchar(256)  = '' ''\n\t\t\tDECLARE @columnUpdatelist varchar(256)  = '' ''\n\t\t\tDECLARE @column_count tinyint\n\t\t\tDECLARE @i tinyint=1\n\t\t\tDECLARE @updatestatement nvarchar(512)\n\t\t\tDECLARE @deletestatement nvarchar(512)\n\t\t\tDECLARE @insertstatement nvarchar(512)\n\t\t\t--\n\t\t\t\tIF EXISTS (SELECT 1 as CtrCount FROM stage.'+@table_name+')\n\t\t\t\t\tBEGIN\n\t\t\t\t\t\tSELECT @column_count=count(*)\n\t\t\t\t\t\tFROM\n\t\t\t\t\t\t\tsys.columns as c join sys.tables as t on c.object_id=t.object_id \n\t\t\t\t\t\t\tJOIN sys.schemas as s on s.schema_id=t.schema_id\n\t\t\t\t\t\tWHERE s.name='''+@schema_name+''' and t.name='''+@table_name+'''\n\t\t\t\t\t\tIF @column_count>0\n\t\t\t\t\t\t BEGIN\n\t\t\t\t\t\t\tWHILE @i<=@column_count\n\t\t\t\t\t\t\t\tBegin\n\t\t\t\t\t\t\t\t\tSELECT @column = \n\t\t\t\t\t\t\t\t\t\tCASE WHEN @i=1 THEN c.name ELSE '',''+c.name END\n\n\t\t\t\t\t\t\t\t\tFROM\t\n\t\t\t\t\t\t\t\t\t\tsys.columns as c join sys.tables as t on c.object_id=t.object_id \n\t\t\t\t\t\t\t\t\t\tJOIN sys.schemas as s on s.schema_id=t.schema_id\n\t\t\t\t\t\t\t\t\tWHERE s.name='''+@schema_name+''' and t.name='''+@table_name+''' and c.column_id = @i\n\t\t\t\t\t\t\t\t\tSET @i = @i+1\n\t\t\t\t\t\t\t\t\tSET @columnlist = @columnlist + @Column\n\t\t\t\t\t\t\t\t\tIF @i>1\n\t\t\t\t\t\t\t\t\t\tSET @columnUpdatelist = @columnUpdatelist +'', ''+REPLACE(@Column,'','','''')+'' = ''+REPLACE(@Column,'','','''')\n\t\t\t\t\t\t\t\tEnd\n\t\t\t\t\t\t\tSELECT @columnUpdatelist=REPLACE(@columnUpdatelist,'', Id = Id,'','''')\n\t\t\t\t\t\t END\n\t\t\t\t\tELSE\n\t\t\t\t\t\tBEGIN\n\t\t\t\t\t\t\tPRINT ''non''\n\t\t\t\t\t\tEND\n\t\t\t--Inserts\n\t\t\t\t\tPRINT ''Insert''\n\t\t\t\t\tSELECT @insertstatement = ''\n\t\t\t\t\tSET IDENTITY_INSERT '+@schema_name+'.'+@table_name+' ON\n\t\t\t\t\tINSERT INTO '+@schema_name+'.'+@table_name+'(''+@columnlist+'') \n\t\t\t\t\t\tSELECT ''+@columnlist+'' from stage.'+@table_name+' where [SYS_CHANGE_OPERATION]='+''''+''''+'I'+''''+''''+' and ID not in(SELECT CT_id FROM '+@schema_name+'.'+@table_name+')\n\t\t\t\t\tSET IDENTITY_INSERT '+@schema_name+'.'+@table_name+' OFF''\n\t\t\t\t\tEXEC sp_executesql @insertstatement\t\n\t\t\t\t--Updates\n\t\t\t\t\tPRINT ''Update''\n\t\t\t\t\tSELECT @updatestatement ='''+'Update '+@schema_name+'.'+@table_name+' SET ''+@columnUpdatelist+''\n\t\t\t\t\t\tSELECT ''+@columnlist+'' FROM stage.'+@table_name+' where [SYS_CHANGE_OPERATION]='+''''+''''+'U'+''''+''''+''+' and ID in(SELECT CT_id FROM '+@schema_name+'.'+@table_name+')''\n\t\t\t\t\t\t\tEXEC sp_executesql @updatestatement\n\t\t\t\t--Deletes\n\t\t\t\t\tPRINT ''Delete''\n\t\t\t\t\tSELECT @deletestatement =''\tDELETE FROM '+@schema_name+'.'+@table_name+' WHERE ID IN (\n\t\t\t\t\t\tSELECT CT_Id FROM stage.'+@table_name+' where [SYS_CHANGE_OPERATION]='+''''+''''+'D'+''''+''''+')''\n\t\t\t\t\tEXEC sp_executesql @deletestatement\n\t\t\t\tEND''\n\t\n\t\n\t\t\t\t--PRINT @statement\n\t\t\t\t--SELECT @statement\n\t\t\tEXECUTE sp_executesql @statement\n\t\t\tGO'\nCREATE PROCEDURE stage.createclusterindex @schema_name varchar(255), @table_name varchar(255)\nAS\nDECLARE @statement nvarchar(1024)\nSET @statement = 'CREATE CLUSTERED INDEX IX_'+@schema_name+'_'+@table_name+' ON '+@schema_name+'.'+@table_name+' (id)'\nEXEC sp_executesql @statement\nSET @statement = 'CREATE UNIQUE INDEX IX_'+@schema_name+'_'+@table_name+' ON '+@schema_name+'.'+@table_name+' (id)'\nEXEC sp_executesql @statement",
+										"type": "Expression"
+									},
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "LinkWCMAppDestination",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "Lookup Server name",
+						"type": "Lookup",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "SqlServerSource",
+								"sqlReaderQuery": {
+									"value": "SELECT @@SERVERNAME",
+									"type": "Expression"
+								},
+								"queryTimeout": "02:00:00",
+								"partitionOption": "None"
+							},
+							"dataset": {
+								"referenceName": "DSWCMAppSourceLookup",
+								"type": "DatasetReference"
+							}
+						}
+					}
+				],
+				"annotations": [],
+				"lastPublishTime": "2021-01-29T13:07:17Z"
+			},
+			"dependsOn": []
+		}
+	]
+}

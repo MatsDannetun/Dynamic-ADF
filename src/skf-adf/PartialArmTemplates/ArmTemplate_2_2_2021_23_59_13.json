@@ -1,0 +1,699 @@
+{
+	"$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"factoryName": {
+			"type": "string",
+			"metadata": "Data Factory name",
+			"defaultValue": "datareplication-adf"
+		}
+	},
+	"variables": {
+		"factoryId": "[concat('Microsoft.DataFactory/factories/', parameters('factoryName'))]"
+	},
+	"resources": [
+		{
+			"name": "[concat(parameters('factoryName'), '/pipelineWCMAppInitalSetup')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"activities": [
+					{
+						"name": "SPROC SOURCE if exist and CT enabled",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "Lookup Server name",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": {
+								"value": "sp_executesql",
+								"type": "Expression"
+							},
+							"storedProcedureParameters": {
+								"statement": {
+									"value": {
+										"value": "IF NOT EXISTS (SELECT 1 FROM sys.change_tracking_databases t\nINNER JOIN sys.databases d ON d.database_id = t.database_id WHERE d.name='app-db') \n     Begin\n\t\tIF EXISTS(SELECT 1 FROM sys.databases WHERE name='app-db')\n\t\tBEGIN\n\t\t\tALTER DATABASE [app-db]  \n\t\t\tSET CHANGE_TRACKING = ON  \n\t\t\t(CHANGE_RETENTION = 2 DAYS, AUTO_CLEANUP = ON)\n\t\tEND\n\tEND",
+										"type": "Expression"
+									},
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "LinkWCMAppSource",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "SPROC SOURCE deploy db objects",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "SPROC SOURCE if exist and CT enabled",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": {
+								"value": "sp_executesql",
+								"type": "Expression"
+							},
+							"storedProcedureParameters": {
+								"statement": {
+									"value": {
+										"value": "IF NOT EXISTS(SELECT 1 FROM sys.schemas WHERE name='ct')\n\tBegin\n\t\tEXEC('CREATE SCHEMA [ct]'); \n\tEnd;\nIF NOT EXISTS(SELECT 1 FROM sys.tables WHERE name='ChangeTrackingVersion')\n\tBegin\n\t\tcreate table [ct].ChangeTrackingVersion\n\t\t(\n\t\t\tid int identity(1,1),\n\t\t\t[object_id] int,\n\t\t\t[schema_name] varchar(255),\n\t\t\t[table_name] varchar(255),\n\t\t\t[pipegroup] varchar(50),\n\t\t\tSYS_CHANGE_VERSION BIGINT,\n\t\t\tActiveflag bit default(1)\n\t\t\tPRIMARY KEY (id)\n\t\t)\nEnd;\n\t\tINSERT INTO [ct].[ChangeTrackingVersion](object_id,schema_name,table_name,pipegroup,SYS_CHANGE_VERSION)\n\t\tSELECT t.object_id,s.name as Schema_name, t.name AS Table_name,pipegroup='WCMAPP', 0 as SYS_CHANGE_VERSION\n\t\tFROM sys.change_tracking_tables tr\n\t\tINNER JOIN sys.tables t on t.object_id = tr.object_id\n\t\tINNER JOIN sys.schemas s on s.schema_id = t.schema_id WHERE t.object_id not in (SELECT object_id FROM [ct].[ChangeTrackingVersion]);\nUPDATE [ct].[ChangeTrackingVersion] SET pipegroup='WCMOEE' WHERE table_name IN('MachineKpis','MachineGroupKpis','JobHistories');\nIF NOT EXISTS(SELECT 1 FROM [app-db].sys.procedures WHERE name='UpdateChangeTrackingVersion')\n\tBegin\n\t\t\t\tEXEC('CREATE PROCEDURE [ct].[UpdateChangeTrackingVersion] @CurrentTrackingVersion BIGINT, @schema_name varchar(255), @table_name varchar(255)\n\t\t\tAS\n\t\t\tUPDATE ct.ChangeTrackingVersion\n\t\t\tSET [SYS_CHANGE_VERSION] = @CurrentTrackingVersion\n\t\t\tWHERE [schema_name]=@schema_name and [table_Name] = @table_name')\n\tEND;\n--\nIF NOT EXISTS(SELECT 1 FROM sys.procedures WHERE name='InsertNewChangeTrackingtable')\n\tBegin\n\t\tEXEC ('CREATE PROCEDURE [ct].[InsertNewChangeTrackingtable] \n\t\tAS\n\t\t\t\t\t\tINSERT INTO [ct].[ChangeTrackingVersion](object_id,schema_name,table_name,pipegroup,SYS_CHANGE_VERSION)\nSELECT t.object_id,s.name as Schema_name, t.name AS Table_name,pipegroup=''WCMAPP'', 0 as SYS_CHANGE_VERSION\nFROM sys.change_tracking_tables tr\nINNER JOIN sys.tables t on t.object_id = tr.object_id\nINNER JOIN sys.schemas s on s.schema_id = t.schema_id WHERE t.object_id not in (SELECT object_id FROM [ct].[ChangeTrackingVersion])')\n\tEnd;\nIF EXISTS(SELECT 1 FROM sys.procedures WHERE name='enableCTonnewtables')\n\tBegin\n\t\tDROP PROCEDURE [ct].[enableCTonnewtables]\n\tEnd;\nIF EXISTS(SELECT 1 FROM sys.procedures WHERE name='getincrementaldata')\n\tBegin\n\t\tDROP PROCEDURE [ct].[getincrementaldata]\n\tEnd;",
+										"type": "Expression"
+									},
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "LinkWCMAppSource",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "SPROC DESTINATION create db",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "SPROC SOURCE getincrementaldata",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": {
+								"value": "sp_executesql",
+								"type": "Expression"
+							},
+							"storedProcedureParameters": {
+								"statement": {
+									"value": {
+										"value": "IF NOT EXISTS(SELECT 1 FROM sys.sysdatabases WHERE name ='app-db')\n\tBegin\n\t\tCREATE DATABASE [app-db]\n\tEND;",
+										"type": "Expression"
+									},
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "LinkWCMAppDestinationInit",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "Lookup Server name",
+						"type": "Lookup",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "SqlServerSource",
+								"sqlReaderQuery": {
+									"value": "SELECT @@SERVERNAME as db_name",
+									"type": "Expression"
+								},
+								"queryTimeout": "02:00:00",
+								"partitionOption": "None"
+							},
+							"dataset": {
+								"referenceName": "DSWCMAppSourceLookup",
+								"type": "DatasetReference"
+							}
+						}
+					},
+					{
+						"name": "SPROC DESTINATION create sp_updatetablesfromstage",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "SPROC DESTINATION create schema",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": "sp_executesql",
+							"storedProcedureParameters": {
+								"statement": {
+									"value": {
+										"value": "CREATE PROCEDURE [stage].[sp_updatetablesfromstage] @schema_name varchar(30), @table_name varchar(30)\n\t\t\tAS\n\t\t\tDECLARE @statement nvarchar(3000)\n\t\t\t--\n\t\t\tSELECT @statement = '\n\t\t\tDECLARE @Column varchar(30)\n\t\t\tDECLARE @columnlist varchar(256)  = '' ''\n\t\t\tDECLARE @columnUpdatelist varchar(256)  = '' ''\n\t\t\tDECLARE @column_count tinyint\n\t\t\tDECLARE @i tinyint=1\n\t\t\tDECLARE @updatestatement nvarchar(512)\n\t\t\tDECLARE @deletestatement nvarchar(512)\n\t\t\tDECLARE @insertstatement nvarchar(512)\n\t\t\t--\n\t\t\t\tIF EXISTS (SELECT 1 as CtrCount FROM stage.'+@table_name+')\n\t\t\t\t\tBEGIN\n\t\t\t\t\t\tSELECT @column_count=count(*)\n\t\t\t\t\t\tFROM\n\t\t\t\t\t\t\tsys.columns as c join sys.tables as t on c.object_id=t.object_id \n\t\t\t\t\t\t\tJOIN sys.schemas as s on s.schema_id=t.schema_id\n\t\t\t\t\t\tWHERE s.name='''+@schema_name+''' and t.name='''+@table_name+'''\n\t\t\t\t\t\tIF @column_count>0\n\t\t\t\t\t\t BEGIN\n\t\t\t\t\t\t\tWHILE @i<=@column_count\n\t\t\t\t\t\t\t\tBegin\n\t\t\t\t\t\t\t\t\tSELECT @column = \n\t\t\t\t\t\t\t\t\t\tCASE WHEN @i=1 THEN c.name ELSE '',''+c.name END\n\n\t\t\t\t\t\t\t\t\tFROM\t\n\t\t\t\t\t\t\t\t\t\tsys.columns as c join sys.tables as t on c.object_id=t.object_id \n\t\t\t\t\t\t\t\t\t\tJOIN sys.schemas as s on s.schema_id=t.schema_id\n\t\t\t\t\t\t\t\t\tWHERE s.name='''+@schema_name+''' and t.name='''+@table_name+''' and c.column_id = @i\n\t\t\t\t\t\t\t\t\tSET @i = @i+1\n\t\t\t\t\t\t\t\t\tSET @columnlist = @columnlist + @Column\n\t\t\t\t\t\t\t\t\tIF @i>1\n\t\t\t\t\t\t\t\t\t\tSET @columnUpdatelist = @columnUpdatelist +'', ''+REPLACE(@Column,'','','''')+'' = ''+REPLACE(@Column,'','','''')\n\t\t\t\t\t\t\t\tEnd\n\t\t\t\t\t\t\tSELECT @columnUpdatelist=REPLACE(@columnUpdatelist,'', Id = Id,'','''')\n\t\t\t\t\t\t END\n\t\t\t\t\tELSE\n\t\t\t\t\t\tBEGIN\n\t\t\t\t\t\t\tPRINT ''non''\n\t\t\t\t\t\tEND\n\t\t\t--Inserts\n\t\t\t\t\tPRINT ''Insert''\n\t\t\t\t\tSELECT @insertstatement = ''\n\t\t\t\t\tSET IDENTITY_INSERT '+@schema_name+'.'+@table_name+' ON\n\t\t\t\t\tINSERT INTO '+@schema_name+'.'+@table_name+'(''+@columnlist+'') \n\t\t\t\t\t\tSELECT ''+@columnlist+'' from stage.'+@table_name+' where [SYS_CHANGE_OPERATION]='+''''+''''+'I'+''''+''''+' and ID not in(SELECT CT_id FROM '+@schema_name+'.'+@table_name+')\n\t\t\t\t\tSET IDENTITY_INSERT '+@schema_name+'.'+@table_name+' OFF''\n\t\t\t\t\tEXEC sp_executesql @insertstatement\t\n\t\t\t\t--Updates\n\t\t\t\t\tPRINT ''Update''\n\t\t\t\t\tSELECT @updatestatement ='''+'Update '+@schema_name+'.'+@table_name+' SET ''+@columnUpdatelist+''\n\t\t\t\t\t\tSELECT ''+@columnlist+'' FROM stage.'+@table_name+' where [SYS_CHANGE_OPERATION]='+''''+''''+'U'+''''+''''+''+' and ID in(SELECT CT_id FROM '+@schema_name+'.'+@table_name+')''\n\t\t\t\t\t\t\tEXEC sp_executesql @updatestatement\n\t\t\t\t--Deletes\n\t\t\t\t\tPRINT ''Delete''\n\t\t\t\t\tSELECT @deletestatement =''\tDELETE FROM '+@schema_name+'.'+@table_name+' WHERE ID IN (\n\t\t\t\t\t\tSELECT CT_Id FROM stage.'+@table_name+' where [SYS_CHANGE_OPERATION]='+''''+''''+'D'+''''+''''+')''\n\t\t\t\t\tEXEC sp_executesql @deletestatement\n\t\t\t\tEND''\n\t\n\t\n\t\t\t\t--PRINT @statement\n\t\t\t\t--SELECT @statement\n\t\t\tEXECUTE sp_executesql @statement\n\t\t\tGO';",
+										"type": "Expression"
+									}
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "LinkWCMAppDestination",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "SPROC DESTINATION create schema",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "SPROC DESTINATION create db",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": {
+								"value": "sp_executesql",
+								"type": "Expression"
+							},
+							"storedProcedureParameters": {
+								"statement": {
+									"value": {
+										"value": "IF NOT EXISTS(SELECT 1 FROM sys.schemas WHERE name='stage')\n\tBegin\n\t\tEXEC('CREATE SCHEMA [stage]'); \n\tEnd;\nIF EXISTS(SELECT 1 FROM sys.procedures WHERE name='sp_updatetablesfromstage')\n\tBegin\n\t\tDROP PROCEDURE [stage].[sp_updatetablesfromstage]\n\tEnd;\nIF EXISTS(SELECT 1 FROM sys.procedures WHERE name='createclusterindex ')\n\tBegin\n\t\tDROP PROCEDURE [stage].[createclusterindex]\n\tEnd;",
+										"type": "Expression"
+									}
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "LinkWCMAppDestination",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "SPROC DESTINATION create createclusterindex",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "SPROC DESTINATION create sp_updatetablesfromstage",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": "sp_executesql",
+							"storedProcedureParameters": {
+								"statement": {
+									"value": {
+										"value": "CREATE PROCEDURE [stage].[createclusterindex] @schema_name varchar(255), @table_name varchar(255)\nAS\nDECLARE @CIXstatement nvarchar(1024)\nDECLARE @UIXstatement nvarchar(1024)\nIF @table_name in ('MachineGroupRelations','MachineOperations','__EFMigrationsHistory')\n\tBEGIN\n\t\tIF @table_name = 'MachineGroupRelations'\n\t\t\tBEGIN\n\t\t\t\tSET @CIXstatement = 'CREATE CLUSTERED INDEX CIX_'+@schema_name+'_'+@table_name+' ON '+@schema_name+'.'+@table_name+' (ParentMachineGroupid,ChildMachineGroupId)'\n\t\t\t\tSET @UIXstatement = 'CREATE UNIQUE INDEX UIX_'+@schema_name+'_'+@table_name+' ON '+@schema_name+'.'+@table_name+' (ParentMachineGroupid,ChildMachineGroupId)'\n\t\t\tEND\n\t\tIF @table_name = '__EFMigrationsHistory'\n\t\t\tBEGIN\n\t\t\t\tSET @CIXstatement = 'CREATE CLUSTERED INDEX CIX_'+@schema_name+'_'+@table_name+' ON '+@schema_name+'.'+@table_name+' (MigrationId)'\n\t\t\t\tSET @UIXstatement = 'CREATE UNIQUE INDEX UIX_'+@schema_name+'_'+@table_name+' ON '+@schema_name+'.'+@table_name+' (MigrationId)'\n\t\t\tEND\n\t\tELSE \n\t\t\tBEGIN\n\t\t\t\tSET @CIXstatement = 'CREATE CLUSTERED INDEX CIX_'+@schema_name+'_'+@table_name+' ON '+@schema_name+'.'+@table_name+' (MachineId,OperationId)'\n\t\t\t\tSET @UIXstatement = 'CREATE UNIQUE INDEX UIX_'+@schema_name+'_'+@table_name+' ON '+@schema_name+'.'+@table_name+' (MachineId,OperationId)'\n\t\t\tEND\n\tEND\nELSE \n\tBegin\n\t\tSET @CIXstatement = 'CREATE CLUSTERED INDEX CIX_'+@schema_name+'_'+@table_name+' ON '+@schema_name+'.'+@table_name+' (id)'\n\t\tSET @UIXstatement = 'CREATE UNIQUE INDEX UIX_'+@schema_name+'_'+@table_name+' ON '+@schema_name+'.'+@table_name+' (id)'\n\tEnd\nEXEC sp_executesql @CIXstatement;\nEXEC sp_executesql @UIXstatement;",
+										"type": "Expression"
+									}
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "LinkWCMAppDestination",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "SPROC SOURCE enable CT on tables",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "SPROC SOURCE deploy db objects",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": "sp_executesql",
+							"storedProcedureParameters": {
+								"statement": {
+									"value": {
+										"value": "CREATE PROCEDURE [ct].[enableCTonnewtables]\n\tAS\n\tDECLARE @i int=1\n\tDECLARE @count int=0\n\tDECLARE @statement nvarchar(1024)\n\tDECLARE @Listoftables TABLE(rowid INT,stmt VARCHAR(1024))\n\tSELECT @count=count(*) FROM sys.tables WHERE schema_id=1;\n\tINSERT INTO @Listoftables\n\tSELECT ROW_NUMBER() OVER(ORDER BY Name DESC) AS rowid,'ALTER TABLE [dbo].['+Name+'] \n\t\t\t\tENABLE CHANGE_TRACKING WITH (TRACK_COLUMNS_UPDATED = ON)' as stmt FROM sys.tables WHERE schema_id=1 and object_id not in (SELECT object_id FROM [ct].[ChangeTrackingVersion]);\n\tWHILE @i<@count\n\t\tBegin\n\t\t\tSELECT @statement = stmt FROM @Listoftables WHERE rowid=@i\n\t\t\tEXEC (@statement)\n\t\t\tSELECT @i = @i + 1\n\t\tEnd;\nEXEC [ct].[InsertNewChangeTrackingtable];\nEXEC [ct].[enableCTonnewtables];\nEXEC [ct].[InsertNewChangeTrackingtable];",
+										"type": "Expression"
+									},
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "LinkWCMAppSource",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "SPROC SOURCE getincrementaldata",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "SPROC SOURCE enable CT on tables",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": {
+								"value": "sp_executesql",
+								"type": "Expression"
+							},
+							"storedProcedureParameters": {
+								"statement": {
+									"value": {
+										"value": "CREATE PROCEDURE [ct].[getincrementaldata] @schema_name varchar(255), @table_name varchar(255),@SYS_CHANGE_VERSION bigint, @CurrentChangeTrackingVersion bigint\nAS\nDECLARE @statement nvarchar(2000) = ' '\n--DECLARE @strSYS_CHANGE_VERSION nvarchar(128)\n--DECLARE @strSYS_CHANGE_CURRENT nvarchar(128)\n--SELECT @strSYS_CHANGE_VERSION = CAST(@SYS_CHANGE_VERSION as varchar(1024))\n--SELECT @strSYS_CHANGE_CURRENT = CAST(@SYS_CHANGE_CURRENT as varchar(1024))\nIF @table_name='MachineGroupRelations'\n\t\tBEGIN\n\t\t\tSELECT @statement ='select CT.ParentMachineGroupid as CT_ParentMachineGroupid,CT.ChildMachineGroupId as CT_ChildMachineGroupId,dst.* ,CT.SYS_CHANGE_VERSION, SYS_CHANGE_OPERATION \n\t\t\tFROM '+@schema_name+'.'+@table_name+' as dst RIGHT OUTER JOIN \n\t\t\tCHANGETABLE(CHANGES '+@schema_name+'.'+@table_name+',@SYS_CHANGE_VERSION) as CT \n\t\t\tON dst.ParentMachineGroupid= CT.ParentMachineGroupid and dst.ChildMachineGroupId =CT.ChildMachineGroupId where CT.SYS_CHANGE_VERSION <= @CurrentChangeTrackingVersion'\n\t\t\tEXEC sp_executesql @statement, N'@SYS_CHANGE_VERSION bigint,@CurrentChangeTrackingVersion Bigint',@SYS_CHANGE_VERSION,@CurrentChangeTrackingVersion\n\t\tEND\nIF @table_name='MachineOperations'\n\t\tBEGIN\n\t\t\tSELECT @statement ='select CT.MachineId as CT_MachineId,CT.OperationId as CT_OperationId , dst.* ,CT.SYS_CHANGE_VERSION, SYS_CHANGE_OPERATION \n\t\t\tFROM '+@schema_name+'.'+@table_name+' as dst RIGHT OUTER JOIN \n\t\t\tCHANGETABLE(CHANGES '+@schema_name+'.'+@table_name+' , @SYS_CHANGE_VERSION) as CT \n\t\t\tON dst.MachineId= CT.MachineId and dst.OperationId =CT.OperationId where CT.SYS_CHANGE_VERSION <= @CurrentChangeTrackingVersion'\n\t\t\tEXEC sp_executesql @statement, N'@SYS_CHANGE_VERSION bigint,@CurrentChangeTrackingVersion Bigint',@SYS_CHANGE_VERSION,@CurrentChangeTrackingVersion\n\t\tEND\nIF @table_name='__EFMigrationsHistory'\t\t\n\t\tBEGIN\n\t\t\tSELECT @statement='SELECT CT.id as CT_ID,dst.* ,CT.SYS_CHANGE_VERSION, SYS_CHANGE_OPERATION \n\t\t\tFROM '+@schema_name+'.'+@table_name+' as dst RIGHT OUTER JOIN \n\t\t\tCHANGETABLE(CHANGES '+@schema_name+'.'+@table_name+',@SYS_CHANGE_VERSION) as CT \n\t\t\tON dst.MigrationId = CT.id where CT.SYS_CHANGE_VERSION <= @CurrentChangeTrackingVersion'\n\t\t\tEXEC sp_executesql @statement, N'@SYS_CHANGE_VERSION bigint, @CurrentChangeTrackingVersion Bigint',@SYS_CHANGE_VERSION,@CurrentChangeTrackingVersion\n\t\tEND\nELSE\n\tBEGIN\n\t\tSELECT @statement='SELECT CT.id as CT_ID,dst.* ,CT.SYS_CHANGE_VERSION, SYS_CHANGE_OPERATION \n\t\tFROM '+@schema_name+'.'+@table_name+' as dst RIGHT OUTER JOIN \n\t\tCHANGETABLE(CHANGES '+@schema_name+'.'+@table_name+',@SYS_CHANGE_VERSION) as CT \n\t\tON dst.id = CT.id where CT.SYS_CHANGE_VERSION <= @CurrentChangeTrackingVersion'\n\t\tEXEC sp_executesql @statement, N'@SYS_CHANGE_VERSION bigint, @CurrentChangeTrackingVersion Bigint',@SYS_CHANGE_VERSION,@CurrentChangeTrackingVersion\n\tEND;",
+										"type": "Expression"
+									},
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "LinkWCMAppSource",
+							"type": "LinkedServiceReference"
+						}
+					}
+				],
+				"annotations": [],
+				"lastPublishTime": "2021-01-29T13:07:17Z"
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('factoryName'), '/pipelineWCMConfigInitalSetup')]",
+			"type": "Microsoft.DataFactory/factories/pipelines",
+			"apiVersion": "2018-06-01",
+			"properties": {
+				"activities": [
+					{
+						"name": "SPROC SOURCE if exist and CT enabled",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "Lookup Server name",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": {
+								"value": "sp_executesql",
+								"type": "Expression"
+							},
+							"storedProcedureParameters": {
+								"statement": {
+									"value": {
+										"value": "IF NOT EXISTS (SELECT 1 FROM sys.change_tracking_databases t\nINNER JOIN sys.databases d ON d.database_id = t.database_id WHERE d.name='config-db') \n     Begin\n\t\tIF EXISTS(SELECT 1 FROM sys.databases WHERE name='app-db')\n\t\tBEGIN\n\t\t\tALTER DATABASE [config-db]  \n\t\t\tSET CHANGE_TRACKING = ON  \n\t\t\t(CHANGE_RETENTION = 2 DAYS, AUTO_CLEANUP = ON)\n\t\tEND\n\tEND",
+										"type": "Expression"
+									},
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "LinkWCMConfigSource",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "SPROC SOURCE deploy db objects",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "SPROC SOURCE if exist and CT enabled",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": {
+								"value": "sp_executesql",
+								"type": "Expression"
+							},
+							"storedProcedureParameters": {
+								"statement": {
+									"value": {
+										"value": "IF NOT EXISTS(SELECT 1 FROM sys.schemas WHERE name='ct')\n\tBegin\n\t\tEXEC('CREATE SCHEMA [ct]'); \n\tEnd;\nIF NOT EXISTS(SELECT 1 FROM sys.tables WHERE name='ChangeTrackingVersion')\n\tBegin\n\t\tcreate table [ct].ChangeTrackingVersion\n\t\t(\n\t\t\tid int identity(1,1),\n\t\t\t[object_id] int,\n\t\t\t[schema_name] varchar(255),\n\t\t\t[table_name] varchar(255),\n\t\t\t[pipegroup] varchar(50),\n\t\t\tSYS_CHANGE_VERSION BIGINT,\n\t\t\tActiveflag bit default(1)\n\t\t\tPRIMARY KEY (id)\n\t\t)\nEnd;\n\t\tINSERT INTO [ct].[ChangeTrackingVersion](object_id,schema_name,table_name,pipegroup,SYS_CHANGE_VERSION)\n\t\tSELECT t.object_id,s.name as Schema_name, t.name AS Table_name,pipegroup='WCMAPP', 0 as SYS_CHANGE_VERSION\n\t\tFROM sys.change_tracking_tables tr\n\t\tINNER JOIN sys.tables t on t.object_id = tr.object_id\n\t\tINNER JOIN sys.schemas s on s.schema_id = t.schema_id WHERE t.object_id not in (SELECT object_id FROM [ct].[ChangeTrackingVersion]);\nUPDATE [ct].[ChangeTrackingVersion] SET pipegroup='WCMOEE' WHERE table_name IN('MachineKpis','MachineGroupKpis','JobHistories');\nIF NOT EXISTS(SELECT 1 FROM [app-db].sys.procedures WHERE name='UpdateChangeTrackingVersion')\n\tBegin\n\t\t\t\tEXEC('CREATE PROCEDURE [ct].[UpdateChangeTrackingVersion] @CurrentTrackingVersion BIGINT, @schema_name varchar(255), @table_name varchar(255)\n\t\t\tAS\n\t\t\tUPDATE ct.ChangeTrackingVersion\n\t\t\tSET [SYS_CHANGE_VERSION] = @CurrentTrackingVersion\n\t\t\tWHERE [schema_name]=@schema_name and [table_Name] = @table_name')\n\tEND;\nIF NOT EXISTS(SELECT 1 FROM sys.procedures WHERE name='InsertNewChangeTrackingtable')\n\tBegin\n\t\tEXEC ('CREATE PROCEDURE [ct].[InsertNewChangeTrackingtable] \n\t\tAS\n\t\t\t\t\t\tINSERT INTO [ct].[ChangeTrackingVersion](object_id,schema_name,table_name,pipegroup,SYS_CHANGE_VERSION)\nSELECT t.object_id,s.name as Schema_name, t.name AS Table_name,pipegroup=''WCMConfig'', 0 as SYS_CHANGE_VERSION\nFROM sys.change_tracking_tables tr\nINNER JOIN sys.tables t on t.object_id = tr.object_id\nINNER JOIN sys.schemas s on s.schema_id = t.schema_id WHERE t.object_id not in (SELECT object_id FROM [ct].[ChangeTrackingVersion])')\n\tEnd;\nIF EXISTS(SELECT 1 FROM sys.procedures WHERE name='enableCTonnewtables')\n\tBegin\n\t\tDROP PROCEDURE [ct].[enableCTonnewtables]\n\tEnd;\nIF EXISTS(SELECT 1 FROM sys.procedures WHERE name='getincrementaldata')\n\tBegin\n\t\tDROP PROCEDURE [ct].[getincrementaldata]\n\tEnd;",
+										"type": "Expression"
+									},
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "LinkWCMConfigSource",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "SPROC DESTINATION create db",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "SPROC SOURCE create getincremental",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": {
+								"value": "sp_executesql",
+								"type": "Expression"
+							},
+							"storedProcedureParameters": {
+								"statement": {
+									"value": {
+										"value": "IF NOT EXISTS(SELECT 1 FROM sys.sysdatabases WHERE name ='config-db')\n\tBegin\n\t\tCREATE DATABASE [config-db]\n\tEND;",
+										"type": "Expression"
+									},
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "LinkWCMConfigDestinationInit",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "Lookup Server name",
+						"type": "Lookup",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "SqlServerSource",
+								"sqlReaderQuery": {
+									"value": "SELECT @@SERVERNAME as db_name",
+									"type": "Expression"
+								},
+								"queryTimeout": "02:00:00",
+								"partitionOption": "None"
+							},
+							"dataset": {
+								"referenceName": "DSWCMConfigSourceLookup",
+								"type": "DatasetReference"
+							}
+						}
+					},
+					{
+						"name": "SPROC DESTINATION create sp_updatetablesfromstage",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "SPROC DESTINATION create schema",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": "sp_executesql",
+							"storedProcedureParameters": {
+								"statement": {
+									"value": {
+										"value": "CREATE PROCEDURE [stage].[sp_updatetablesfromstage] @schema_name varchar(30), @table_name varchar(30)\n\t\t\tAS\n\t\t\tDECLARE @statement nvarchar(3000)\n\t\t\t--\n\t\t\tSELECT @statement = '\n\t\t\tDECLARE @Column varchar(30)\n\t\t\tDECLARE @columnlist varchar(256)  = '' ''\n\t\t\tDECLARE @columnUpdatelist varchar(256)  = '' ''\n\t\t\tDECLARE @column_count tinyint\n\t\t\tDECLARE @i tinyint=1\n\t\t\tDECLARE @updatestatement nvarchar(512)\n\t\t\tDECLARE @deletestatement nvarchar(512)\n\t\t\tDECLARE @insertstatement nvarchar(512)\n\t\t\t--\n\t\t\t\tIF EXISTS (SELECT 1 as CtrCount FROM stage.'+@table_name+')\n\t\t\t\t\tBEGIN\n\t\t\t\t\t\tSELECT @column_count=count(*)\n\t\t\t\t\t\tFROM\n\t\t\t\t\t\t\tsys.columns as c join sys.tables as t on c.object_id=t.object_id \n\t\t\t\t\t\t\tJOIN sys.schemas as s on s.schema_id=t.schema_id\n\t\t\t\t\t\tWHERE s.name='''+@schema_name+''' and t.name='''+@table_name+'''\n\t\t\t\t\t\tIF @column_count>0\n\t\t\t\t\t\t BEGIN\n\t\t\t\t\t\t\tWHILE @i<=@column_count\n\t\t\t\t\t\t\t\tBegin\n\t\t\t\t\t\t\t\t\tSELECT @column = \n\t\t\t\t\t\t\t\t\t\tCASE WHEN @i=1 THEN c.name ELSE '',''+c.name END\n\n\t\t\t\t\t\t\t\t\tFROM\t\n\t\t\t\t\t\t\t\t\t\tsys.columns as c join sys.tables as t on c.object_id=t.object_id \n\t\t\t\t\t\t\t\t\t\tJOIN sys.schemas as s on s.schema_id=t.schema_id\n\t\t\t\t\t\t\t\t\tWHERE s.name='''+@schema_name+''' and t.name='''+@table_name+''' and c.column_id = @i\n\t\t\t\t\t\t\t\t\tSET @i = @i+1\n\t\t\t\t\t\t\t\t\tSET @columnlist = @columnlist + @Column\n\t\t\t\t\t\t\t\t\tIF @i>1\n\t\t\t\t\t\t\t\t\t\tSET @columnUpdatelist = @columnUpdatelist +'', ''+REPLACE(@Column,'','','''')+'' = ''+REPLACE(@Column,'','','''')\n\t\t\t\t\t\t\t\tEnd\n\t\t\t\t\t\t\tSELECT @columnUpdatelist=REPLACE(@columnUpdatelist,'', Id = Id,'','''')\n\t\t\t\t\t\t END\n\t\t\t\t\tELSE\n\t\t\t\t\t\tBEGIN\n\t\t\t\t\t\t\tPRINT ''non''\n\t\t\t\t\t\tEND\n\t\t\t--Inserts\n\t\t\t\t\tPRINT ''Insert''\n\t\t\t\t\tSELECT @insertstatement = ''\n\t\t\t\t\tSET IDENTITY_INSERT '+@schema_name+'.'+@table_name+' ON\n\t\t\t\t\tINSERT INTO '+@schema_name+'.'+@table_name+'(''+@columnlist+'') \n\t\t\t\t\t\tSELECT ''+@columnlist+'' from stage.'+@table_name+' where [SYS_CHANGE_OPERATION]='+''''+''''+'I'+''''+''''+' and ID not in(SELECT CT_id FROM '+@schema_name+'.'+@table_name+')\n\t\t\t\t\tSET IDENTITY_INSERT '+@schema_name+'.'+@table_name+' OFF''\n\t\t\t\t\tEXEC sp_executesql @insertstatement\t\n\t\t\t\t--Updates\n\t\t\t\t\tPRINT ''Update''\n\t\t\t\t\tSELECT @updatestatement ='''+'Update '+@schema_name+'.'+@table_name+' SET ''+@columnUpdatelist+''\n\t\t\t\t\t\tSELECT ''+@columnlist+'' FROM stage.'+@table_name+' where [SYS_CHANGE_OPERATION]='+''''+''''+'U'+''''+''''+''+' and ID in(SELECT CT_id FROM '+@schema_name+'.'+@table_name+')''\n\t\t\t\t\t\t\tEXEC sp_executesql @updatestatement\n\t\t\t\t--Deletes\n\t\t\t\t\tPRINT ''Delete''\n\t\t\t\t\tSELECT @deletestatement =''\tDELETE FROM '+@schema_name+'.'+@table_name+' WHERE ID IN (\n\t\t\t\t\t\tSELECT CT_Id FROM stage.'+@table_name+' where [SYS_CHANGE_OPERATION]='+''''+''''+'D'+''''+''''+')''\n\t\t\t\t\tEXEC sp_executesql @deletestatement\n\t\t\t\tEND''\n\t\n\t\n\t\t\t\t--PRINT @statement\n\t\t\t\t--SELECT @statement\n\t\t\tEXECUTE sp_executesql @statement\n\t\t\tGO';",
+										"type": "Expression"
+									},
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "LinkWCMConfigDestination",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "SPROC DESTINATION create schema",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "SPROC DESTINATION create db",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": {
+								"value": "sp_executesql",
+								"type": "Expression"
+							},
+							"storedProcedureParameters": {
+								"statement": {
+									"value": {
+										"value": "IF NOT EXISTS(SELECT 1 FROM sys.schemas WHERE name='stage')\n\tBegin\n\t\tEXEC('CREATE SCHEMA [stage]'); \n\tEnd;\nIF EXISTS(SELECT 1 FROM sys.procedures WHERE name='sp_updatetablesfromstage')\n\tBegin\n\t\tDROP PROCEDURE [stage].[sp_updatetablesfromstage]\n\tEnd;\nIF EXISTS(SELECT 1 FROM sys.procedures WHERE name='createclusterindex ')\n\tBegin\n\t\tDROP PROCEDURE [stage].[createclusterindex]\n\tEnd;",
+										"type": "Expression"
+									},
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "LinkWCMConfigDestination",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "SPROC DESTINATION create createclusterindex",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "SPROC DESTINATION create sp_updatetablesfromstage",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": "sp_executesql",
+							"storedProcedureParameters": {
+								"statement": {
+									"value": {
+										"value": "CREATEPROCEDURE [stage].[createclusterindex] @schema_name varchar(255), @table_name varchar(255)\nAS\nDECLARE @CIXstatement nvarchar(1024)\nDECLARE @UIXstatement nvarchar(1024)\nIF @table_name in ('MachineGroupRelations','MachineOperations','__EFMigrationsHistory')\n\tBEGIN\n\t\tIF @table_name = 'MachineGroupRelations'\n\t\t\tBEGIN\n\t\t\t\tSET @CIXstatement = 'CREATE CLUSTERED INDEX CIX_'+@schema_name+'_'+@table_name+' ON '+@schema_name+'.'+@table_name+' (ParentMachineGroupid,ChildMachineGroupId)'\n\t\t\t\tSET @UIXstatement = 'CREATE UNIQUE INDEX UIX_'+@schema_name+'_'+@table_name+' ON '+@schema_name+'.'+@table_name+' (ParentMachineGroupid,ChildMachineGroupId)'\n\t\t\tEND\n\t\tIF @table_name = '__EFMigrationsHistory'\n\t\t\tBEGIN\n\t\t\t\tSET @CIXstatement = 'CREATE CLUSTERED INDEX CIX_'+@schema_name+'_'+@table_name+' ON '+@schema_name+'.'+@table_name+' (MigrationId)'\n\t\t\t\tSET @UIXstatement = 'CREATE UNIQUE INDEX UIX_'+@schema_name+'_'+@table_name+' ON '+@schema_name+'.'+@table_name+' (MigrationId)'\n\t\t\tEND\n\t\tELSE \n\t\t\tBEGIN\n\t\t\t\tSET @CIXstatement = 'CREATE CLUSTERED INDEX CIX_'+@schema_name+'_'+@table_name+' ON '+@schema_name+'.'+@table_name+' (MachineId,OperationId)'\n\t\t\t\tSET @UIXstatement = 'CREATE UNIQUE INDEX UIX_'+@schema_name+'_'+@table_name+' ON '+@schema_name+'.'+@table_name+' (MachineId,OperationId)'\n\t\t\tEND\n\tEND\nELSE \n\tBegin\n\t\tSET @CIXstatement = 'CREATE CLUSTERED INDEX CIX_'+@schema_name+'_'+@table_name+' ON '+@schema_name+'.'+@table_name+' (id)'\n\t\tSET @UIXstatement = 'CREATE UNIQUE INDEX UIX_'+@schema_name+'_'+@table_name+' ON '+@schema_name+'.'+@table_name+' (id)'\n\tEnd\nEXEC sp_executesql @CIXstatement;\nEXEC sp_executesql @UIXstatement;",
+										"type": "Expression"
+									},
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "LinkWCMConfigDestination",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "SPROC SOURCE enable CT on tables",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "SPROC SOURCE deploy db objects",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": "sp_executesql",
+							"storedProcedureParameters": {
+								"statement": {
+									"value": {
+										"value": "CREATE PROCEDURE [ct].[enableCTonnewtables]\n\tAS\n\tDECLARE @i int=1\n\tDECLARE @count int=0\n\tDECLARE @statement nvarchar(1024)\n\tDECLARE @Listoftables TABLE(rowid INT,stmt VARCHAR(1024))\n\tSELECT @count=count(*) FROM sys.tables WHERE schema_id=1;\n\tINSERT INTO @Listoftables\n\tSELECT ROW_NUMBER() OVER(ORDER BY Name DESC) AS rowid,'ALTER TABLE [dbo].['+Name+'] \n\t\t\t\tENABLE CHANGE_TRACKING WITH (TRACK_COLUMNS_UPDATED = ON)' as stmt FROM sys.tables WHERE schema_id=1 and object_id not in (SELECT object_id FROM [ct].[ChangeTrackingVersion]);\n\tWHILE @i<@count\n\t\tBegin\n\t\t\tSELECT @statement = stmt FROM @Listoftables WHERE rowid=@i\n\t\t\tEXEC (@statement)\n\t\t\tSELECT @i = @i + 1\n\t\tEnd;\nEXEC [ct].[InsertNewChangeTrackingtable];\nEXEC [ct].[enableCTonnewtables];\nEXEC [ct].[InsertNewChangeTrackingtable];",
+										"type": "Expression"
+									},
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "LinkWCMConfigSource",
+							"type": "LinkedServiceReference"
+						}
+					},
+					{
+						"name": "SPROC SOURCE create getincremental",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "SPROC SOURCE enable CT on tables",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "7.00:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": {
+								"value": "sp_executesql",
+								"type": "Expression"
+							},
+							"storedProcedureParameters": {
+								"statement": {
+									"value": {
+										"value": "CREATE PROCEDURE [ct].[getincrementaldata] @schema_name varchar(255), @table_name varchar(255),@SYS_CHANGE_VERSION bigint, @CurrentChangeTrackingVersion bigint\nAS\nDECLARE @statement nvarchar(2000) = ' '\n--DECLARE @strSYS_CHANGE_VERSION nvarchar(128)\n--DECLARE @strSYS_CHANGE_CURRENT nvarchar(128)\n--SELECT @strSYS_CHANGE_VERSION = CAST(@SYS_CHANGE_VERSION as varchar(1024))\n--SELECT @strSYS_CHANGE_CURRENT = CAST(@SYS_CHANGE_CURRENT as varchar(1024))\nIF @table_name='MachineGroupRelations'\n\t\tBEGIN\n\t\t\tSELECT @statement ='select CT.ParentMachineGroupid as CT_ParentMachineGroupid,CT.ChildMachineGroupId as CT_ChildMachineGroupId,dst.* ,CT.SYS_CHANGE_VERSION, SYS_CHANGE_OPERATION \n\t\t\tFROM '+@schema_name+'.'+@table_name+' as dst RIGHT OUTER JOIN \n\t\t\tCHANGETABLE(CHANGES '+@schema_name+'.'+@table_name+',@SYS_CHANGE_VERSION) as CT \n\t\t\tON dst.ParentMachineGroupid= CT.ParentMachineGroupid and dst.ChildMachineGroupId =CT.ChildMachineGroupId where CT.SYS_CHANGE_VERSION <= @CurrentChangeTrackingVersion'\n\t\t\tEXEC sp_executesql @statement, N'@SYS_CHANGE_VERSION bigint,@CurrentChangeTrackingVersion Bigint',@SYS_CHANGE_VERSION,@CurrentChangeTrackingVersion\n\t\tEND\nIF @table_name='MachineOperations'\n\t\tBEGIN\n\t\t\tSELECT @statement ='select CT.MachineId as CT_MachineId,CT.OperationId as CT_OperationId , dst.* ,CT.SYS_CHANGE_VERSION, SYS_CHANGE_OPERATION \n\t\t\tFROM '+@schema_name+'.'+@table_name+' as dst RIGHT OUTER JOIN \n\t\t\tCHANGETABLE(CHANGES '+@schema_name+'.'+@table_name+' , @SYS_CHANGE_VERSION) as CT \n\t\t\tON dst.MachineId= CT.MachineId and dst.OperationId =CT.OperationId where CT.SYS_CHANGE_VERSION <= @CurrentChangeTrackingVersion'\n\t\t\tEXEC sp_executesql @statement, N'@SYS_CHANGE_VERSION bigint,@CurrentChangeTrackingVersion Bigint',@SYS_CHANGE_VERSION,@CurrentChangeTrackingVersion\n\t\tEND\nIF @table_name='__EFMigrationsHistory'\t\t\n\t\tBEGIN\n\t\t\tSELECT @statement='SELECT CT.id as CT_ID,dst.* ,CT.SYS_CHANGE_VERSION, SYS_CHANGE_OPERATION \n\t\t\tFROM '+@schema_name+'.'+@table_name+' as dst RIGHT OUTER JOIN \n\t\t\tCHANGETABLE(CHANGES '+@schema_name+'.'+@table_name+',@SYS_CHANGE_VERSION) as CT \n\t\t\tON dst.MigrationId = CT.id where CT.SYS_CHANGE_VERSION <= @CurrentChangeTrackingVersion'\n\t\t\tEXEC sp_executesql @statement, N'@SYS_CHANGE_VERSION bigint, @CurrentChangeTrackingVersion Bigint',@SYS_CHANGE_VERSION,@CurrentChangeTrackingVersion\n\t\tEND\nELSE\n\tBEGIN\n\t\tSELECT @statement='SELECT CT.id as CT_ID,dst.* ,CT.SYS_CHANGE_VERSION, SYS_CHANGE_OPERATION \n\t\tFROM '+@schema_name+'.'+@table_name+' as dst RIGHT OUTER JOIN \n\t\tCHANGETABLE(CHANGES '+@schema_name+'.'+@table_name+',@SYS_CHANGE_VERSION) as CT \n\t\tON dst.id = CT.id where CT.SYS_CHANGE_VERSION <= @CurrentChangeTrackingVersion'\n\t\tEXEC sp_executesql @statement, N'@SYS_CHANGE_VERSION bigint, @CurrentChangeTrackingVersion Bigint',@SYS_CHANGE_VERSION,@CurrentChangeTrackingVersion\n\tEND;",
+										"type": "Expression"
+									},
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "LinkWCMConfigSource",
+							"type": "LinkedServiceReference"
+						}
+					}
+				],
+				"annotations": [],
+				"lastPublishTime": "2021-01-29T13:07:17Z"
+			},
+			"dependsOn": []
+		}
+	]
+}
